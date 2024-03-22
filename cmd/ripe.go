@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/spf13/cobra"
@@ -25,15 +26,19 @@ and usage of using your command. For example:
 Cobra is a CLI library for Go that empowers applications.
 This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("ripe called")
-	},
+	Run: ripe,
 }
+
 
 func init() {
 	netCmd.AddCommand(ripeCmd)
 
 	// Here you will define your flags and configuration settings.
+	// Define flags for ripe command
+	ripeCmd.Flags().StringP("file", "f", "", "File name (required)")
+	ripeCmd.MarkFlagRequired("file") // Mark file flag as required
+
+	ripeCmd.Flags().IntP("worker", "w", 900, "Number of workers")
 
 	// Cobra supports Persistent Flags which will work for this command
 	// and all subcommands, e.g.:
@@ -46,20 +51,14 @@ func init() {
 
 
 
-
-const maxConcurrent = 50 // Control the number of concurrent requests
-
-type BGPState struct {
-	TargetPrefix string `json:"target_prefix"`
-	Path         []int  `json:"path"`
-}
-
-type ResponseData struct {
-	BGPState []BGPState `json:"bgp_state"`
-}
-
+// Response represents the JSON response structure
 type Response struct {
-	Data ResponseData `json:"data"`
+	Data struct {
+		BGPState []struct {
+			Path         []int `json:"path"`
+			TargetPrefix string `json:"target_prefix"`
+		} `json:"bgp_state"`
+	} `json:"data"`
 }
 
 type Output struct {
@@ -68,13 +67,14 @@ type Output struct {
 	AS          string `json:"as"`
 }
 
-func fetchBGPState(ip string, wg *sync.WaitGroup, results chan Output) {
+func fetchBGPState(ip string, wg *sync.WaitGroup, results chan Output, semaphore chan struct{}) {
 	defer wg.Done()
 
 	url := fmt.Sprintf("https://stat.ripe.net/data/bgp-state/data.json?resource=%s", ip)
 	resp, err := http.Get(url)
 	if err != nil {
 		fmt.Printf("Failed to fetch data for IP: %s\n", ip)
+		<-semaphore // Release the semaphore on error
 		return
 	}
 	defer resp.Body.Close()
@@ -83,6 +83,7 @@ func fetchBGPState(ip string, wg *sync.WaitGroup, results chan Output) {
 		var response Response
 		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 			fmt.Printf("Failed to decode response for IP: %s\n", ip)
+			<-semaphore // Release the semaphore on error
 			return
 		}
 
@@ -101,11 +102,16 @@ func fetchBGPState(ip string, wg *sync.WaitGroup, results chan Output) {
 	} else {
 		fmt.Printf("Failed to retrieve data for IP: %s\n", ip)
 	}
+
+	<-semaphore // Release the semaphore on error
 }
 
-func ripe() {
+func ripe(cmd *cobra.Command, args []string) {
 	// Read IP addresses from the "ip.txt" file
-	file, err := os.Open("ip.txt")
+	fileName, _ := cmd.Flags().GetString("file")
+	workerCount, _ := cmd.Flags().GetInt("worker")
+
+	file, err := os.Open(fileName)
 	if err != nil {
 		fmt.Printf("Failed to open the file: %v\n", err)
 		return
@@ -119,12 +125,18 @@ func ripe() {
 		ipAddresses = append(ipAddresses, ip)
 	}
 
-	results := make(chan Output, len(ipAddresses))
+	// Semaphore to limit the number of concurrent goroutines
+	semaphore := make(chan struct{}, workerCount)
+
 	var wg sync.WaitGroup
+	results := make(chan Output, len(ipAddresses))
 
 	for _, ip := range ipAddresses {
 		wg.Add(1)
-		go fetchBGPState(ip, &wg, results)
+
+		// Acquire a slot in the semaphore
+		semaphore <- struct{}{}
+		go fetchBGPState(ip, &wg, results, semaphore)
 	}
 
 	go func() {
@@ -137,13 +149,13 @@ func ripe() {
 		outputData = append(outputData, result)
 	}
 
-	outputFile := "ip_to_prefix_and_as.json"
 	outputJSON, err := json.Marshal(outputData)
 	if err != nil {
 		fmt.Printf("Failed to marshal output data: %v\n", err)
 		return
 	}
-
+	
+	outputFile := getOutputFileName(fileName)
 	file, err = os.Create(outputFile)
 	if err != nil {
 		fmt.Printf("Failed to create output file: %v\n", err)
@@ -155,5 +167,13 @@ func ripe() {
 	if err != nil {
 		fmt.Printf("Failed to write output to file: %v\n", err)
 	}
+}
+
+func getOutputFileName(name string) string {
+	parts := strings.Split(name, ".")
+	if len(parts) > 1 {
+		name = parts[0]
+	}
+	return name + ".json"
 }
 
