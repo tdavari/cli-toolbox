@@ -4,16 +4,14 @@ Copyright © 2024 NAME HERE <EMAIL ADDRESS>
 package cmd
 
 import (
-	"bufio"
 	"fmt"
-	"os"
-	"strings"
 	"sync"
 	"time"
 
 	probing "github.com/prometheus-community/pro-bing"
 
 	"github.com/spf13/cobra"
+	"github.com/tdavari/cli-toolbox/utils"
 )
 
 // pingCmd represents the ping command
@@ -49,80 +47,68 @@ func init() {
 	// pingCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }
 
-
-
-
-
-
-
-
-
-
-
 const WorkersCount = 1000
 const fileName = ""
 
 // removeDuplicate in a generic (int, sting , ...) list
 func removeDuplicate[T comparable](sliceList []T) []T {
-    allKeys := make(map[T]bool)
-    list := []T{}
-    for _, item := range sliceList {
+	allKeys := make(map[T]bool)
+	list := []T{}
+	for _, item := range sliceList {
 
 		_, exists := allKeys[item]
 
-        if !exists {
-            allKeys[item] = true
-            list = append(list, item)
-        }
-    }
-	
-    return list
+		if !exists {
+			allKeys[item] = true
+			list = append(list, item)
+		}
+	}
+
+	return list
 }
 
 // readFileToList reads a file and returns a list of strings where each string is a line from the file
-func readFileToList(fileName string) ([]string, error) {
-	// Open the file
-	file, err := os.Open(fileName)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
+// func readFileToList(fileName string) ([]string, error) {
+// 	// Open the file
+// 	file, err := os.Open(fileName)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	defer file.Close()
 
-	// Initialize an empty list to store lines
-	lines := []string{}
+// 	// Initialize an empty list to store lines
+// 	lines := []string{}
 
-	// Create a scanner to read the file line by line
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		// Strip leading and trailing whitespace from each line
-		line := scanner.Text()
-		line = strings.TrimSpace(line)
-		lines = append(lines, line)
-	}
+// 	// Create a scanner to read the file line by line
+// 	scanner := bufio.NewScanner(file)
+// 	for scanner.Scan() {
+// 		// Strip leading and trailing whitespace from each line
+// 		line := scanner.Text()
+// 		line = strings.TrimSpace(line)
+// 		lines = append(lines, line)
+// 	}
 
-	// Check for errors during scanning
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
+// 	// Check for errors during scanning
+// 	if err := scanner.Err(); err != nil {
+// 		return nil, err
+// 	}
 
-	return lines, nil
-}
-
+// 	return lines, nil
+// }
 
 func ping(cmd *cobra.Command, args []string) {
-	defer timer("main")() 
+	defer timer("main")()
 
 	fileName, _ := cmd.Flags().GetString("file")
 	workerCount, _ := cmd.Flags().GetInt("worker")
 
-	ipAddresses, err := readFileToList(fileName)
+	ipAddresses, err := utils.ReadFileToList(fileName)
 	if err != nil {
 		fmt.Println("Error:", err)
 		return
 	}
 
 	ipAddresses = removeDuplicate(ipAddresses)
-
 
 	// Semaphore to limit the number of concurrent goroutines
 	semaphore := make(chan struct{}, workerCount)
@@ -140,14 +126,13 @@ func ping(cmd *cobra.Command, args []string) {
 		semaphore <- struct{}{}
 		go func(ip string) {
 			defer wg.Done()
-			
-
 
 			pinger, err := probing.NewPinger(ip)
 			if err != nil {
 				fmt.Printf("Error creating pinger for IP %s: %v\n", ip, err)
 				return
 			}
+			// pinger.SetPrivileged(true)
 			pinger.Count = 3
 			pinger.Timeout = 3 * time.Second
 			err = pinger.Run() // Blocks until finished.
@@ -184,9 +169,8 @@ func ping(cmd *cobra.Command, args []string) {
 }
 
 func timer(name string) func() {
-    start := time.Now()
-    return func() {
-        fmt.Printf("%s took %v\n", name, time.Since(start))
-    }
+	start := time.Now()
+	return func() {
+		fmt.Printf("%s took %v\n", name, time.Since(start))
+	}
 }
-

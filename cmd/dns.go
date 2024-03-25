@@ -4,16 +4,15 @@ Copyright © 2024 NAME HERE <EMAIL ADDRESS>
 package cmd
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"net"
-	"os"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/tdavari/cli-toolbox/utils"
 )
 
 // dnsCmd represents the dns command
@@ -26,15 +25,17 @@ and usage of using your command. For example:
 Cobra is a CLI library for Go that empowers applications.
 This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("dns called")
-	},
+	Run: dns,
 }
 
 func init() {
 	netCmd.AddCommand(dnsCmd)
 
 	// Here you will define your flags and configuration settings.
+	dnsCmd.Flags().StringP("file", "f", "", "File name (required)")
+	dnsCmd.MarkFlagRequired("file") // Mark file flag as required
+
+	dnsCmd.Flags().IntP("worker", "w", 3000, "Number of workers")
 
 	// Cobra supports Persistent Flags which will work for this command
 	// and all subcommands, e.g.:
@@ -62,10 +63,13 @@ func (nl nslookup) String() string {
 	return result
 }
 
-const workerCount = 900
 
-func main() {
-	domains, _ := readFileToList("domain.txt")
+func dns(cmd *cobra.Command, args []string) {
+	fileName, _ := cmd.Flags().GetString("file")
+	workerCount, _ := cmd.Flags().GetInt("worker")
+
+	domains, _ := utils.ReadFileToList(fileName)
+	
     // Create a custom resolver
     r := &net.Resolver{
         PreferGo: true,
@@ -127,31 +131,31 @@ func main() {
 }
 
 
-func readFileToList(fileName string) ([]string, error) {
-	// Open the file
-	file, err := os.Open(fileName)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
+// func readFileToList(fileName string) ([]string, error) {
+// 	// Open the file
+// 	file, err := os.Open(fileName)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	defer file.Close()
 
-	// Initialize an empty list to store lines
-	lines := []string{}
+// 	// Initialize an empty list to store lines
+// 	lines := []string{}
 
-	// Create a scanner to read the file line by line
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		// Strip leading and trailing whitespace from each line
-		line := scanner.Text()
-		line = strings.TrimSpace(line)
-		lines = append(lines, line)
-	}
+// 	// Create a scanner to read the file line by line
+// 	scanner := bufio.NewScanner(file)
+// 	for scanner.Scan() {
+// 		// Strip leading and trailing whitespace from each line
+// 		line := scanner.Text()
+// 		line = strings.TrimSpace(line)
+// 		lines = append(lines, line)
+// 	}
 
-	// Check for errors during scanning
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
+// 	// Check for errors during scanning
+// 	if err := scanner.Err(); err != nil {
+// 		return nil, err
+// 	}
 
-	return lines, nil
-}
+// 	return lines, nil
+// }
 
