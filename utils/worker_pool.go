@@ -1,9 +1,7 @@
 package utils
 
 import (
-	"fmt"
 	"sync"
-	"time"
 )
 
 // Task definition
@@ -11,52 +9,26 @@ type Task interface {
 	Process()
 }
 
-// Email task definition
-type EmailTask struct {
-	Email       string
-	Subject     string
-	MessageBody string
-}
-
-// Way to process the Email task
-func (t *EmailTask) Process() {
-	fmt.Printf("Sending email to %s\n", t.Email)
-	// Simulate a time consuming process
-	time.Sleep(2 * time.Second)
-}
-
-// Image processing task
-type ImageProcessingTask struct {
-	ImageUrl string
-}
-
-// Way to process the Image
-func (t *ImageProcessingTask) Process() {
-	fmt.Printf("Processing the image %s\n", t.ImageUrl)
-	// Simulate a time consuming process
-	time.Sleep(5 * time.Second)
-}
-
 // Worker pool definition
-type WorkerPool struct {
-	Tasks       []Task
+type WorkerPool[T Task] struct {
+	Tasks       []T
 	Concurrency int
-	tasksChan   chan Task
+	tasksChan   chan T
 	wg          sync.WaitGroup
 }
 
 // Functions to execute the worker pool
 
-func (wp *WorkerPool) worker() {
+func (wp *WorkerPool[T]) worker() {
 	for task := range wp.tasksChan {
 		task.Process()
 		wp.wg.Done()
 	}
 }
 
-func (wp *WorkerPool) Run() {
+func (wp *WorkerPool[T]) Run() {
 	// Initialize the tasks channel
-	wp.tasksChan = make(chan Task, len(wp.Tasks))
+	wp.tasksChan = make(chan T, len(wp.Tasks))
 
 	// Start workers
 	for i := 0; i < wp.Concurrency; i++ {

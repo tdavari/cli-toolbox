@@ -4,6 +4,7 @@ Copyright © 2024 NAME HERE <EMAIL ADDRESS>
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/spf13/cobra"
 	"github.com/tdavari/cli-toolbox/utils"
 )
@@ -29,6 +31,8 @@ to quickly create a Cobra application.`,
 	Run: ripeMain,
 }
 
+var saveToRedis bool // Define a variable to hold the flag value
+
 func init() {
 	netCmd.AddCommand(ripeCmd)
 
@@ -38,6 +42,9 @@ func init() {
 	ripeCmd.MarkFlagRequired("file") // Mark file flag as required
 
 	ripeCmd.Flags().IntP("worker", "w", 3000, "Number of workers")
+
+	// Define optional flag to specify whether to save to Redis
+	ripeCmd.Flags().BoolVar(&saveToRedis, "redis", false, "Save results to Redis")
 
 	// Cobra supports Persistent Flags which will work for this command
 	// and all subcommands, e.g.:
@@ -108,7 +115,7 @@ func ripeMain(cmd *cobra.Command, args []string) {
 	ips, _ := utils.ReadFileToList(fileName)
 
 	// Create list of tasks
-	var tasks []utils.Task
+	var tasks []*ripeTask
 
 	for _, ip := range ips {
 		// Create RipeTask instance for each IP address
@@ -122,7 +129,7 @@ func ripeMain(cmd *cobra.Command, args []string) {
 	}
 
 	// Create a worker pool
-	wp := utils.WorkerPool{
+	wp := utils.WorkerPool[*ripeTask]{
 		Tasks:       tasks,
 		Concurrency: workerCount, // Number of workers that can run at a time
 	}
@@ -131,6 +138,20 @@ func ripeMain(cmd *cobra.Command, args []string) {
 	wp.Run()
 	fmt.Println("All tasks have been processed!")
 
+	// Save tasks result
+	if saveToRedis {
+		// Save results to Redis hash map
+		saveToRedisHash(tasks, "ripe_task")
+	} else {
+		// Save results to a file
+		saveToFile(tasks, fileName)
+	}
+
+	// Calculate and print elapsed time
+	fmt.Printf("Execution time: %s\n", time.Since(startTime))
+}
+
+func saveToFile(tasks []*ripeTask, fileName string) {
 	// Save tasks result to a file
 	outputFile := getOutputFileName(fileName)
 	outputJSON, err := json.Marshal(tasks)
@@ -150,9 +171,35 @@ func ripeMain(cmd *cobra.Command, args []string) {
 	if err != nil {
 		fmt.Printf("Failed to write output to file: %v\n", err)
 	}
+}
 
-	// Calculate and print elapsed time
-	fmt.Printf("Execution time: %s\n", time.Since(startTime))
+func saveToRedisHash(tasks []*ripeTask, hmapName string) error {
+	// Initialize Redis client
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "1.1.1.1:6379",
+		Password: "", // no password set
+		DB:       11, // use default DB
+	})
+	defer rdb.Close()
+
+	// Prepare a map to hold task IPs and their corresponding JSON representations
+	taskMap := make(map[string]interface{})
+	for _, task := range tasks {
+		taskJSON, err := json.Marshal(task)
+		if err != nil {
+			return err
+		}
+		taskMap[task.IP] = taskJSON
+	}
+
+	// Store all tasks in Redis hash map
+	ctx := context.Background()
+	err := rdb.HMSet(ctx, hmapName, taskMap).Err()
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func getOutputFileName(name string) string {
