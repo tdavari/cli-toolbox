@@ -4,16 +4,16 @@ Copyright © 2024 NAME HERE <EMAIL ADDRESS>
 package cmd
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
-	"sync"
+	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/tdavari/cli-toolbox/utils"
 )
 
 // ripeCmd represents the ripe command
@@ -26,9 +26,8 @@ and usage of using your command. For example:
 Cobra is a CLI library for Go that empowers applications.
 This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
-	Run: ripe,
+	Run: ripeMain,
 }
-
 
 func init() {
 	netCmd.AddCommand(ripeCmd)
@@ -38,7 +37,7 @@ func init() {
 	ripeCmd.Flags().StringP("file", "f", "", "File name (required)")
 	ripeCmd.MarkFlagRequired("file") // Mark file flag as required
 
-	ripeCmd.Flags().IntP("worker", "w", 900, "Number of workers")
+	ripeCmd.Flags().IntP("worker", "w", 3000, "Number of workers")
 
 	// Cobra supports Persistent Flags which will work for this command
 	// and all subcommands, e.g.:
@@ -49,41 +48,37 @@ func init() {
 	// ripeCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }
 
-
-
 // Response represents the JSON response structure
-type Response struct {
+type response struct {
 	Data struct {
 		BGPState []struct {
-			Path         []int `json:"path"`
+			Path         []int  `json:"path"`
 			TargetPrefix string `json:"target_prefix"`
 		} `json:"bgp_state"`
 	} `json:"data"`
 }
 
-type Output struct {
-	IP          string `json:"ip"`
+type ripeTask struct {
+	IP           string `json:"ip"`
 	TargetPrefix string `json:"target_prefix"`
-	AS          string `json:"as"`
+	AS           string `json:"as"`
 }
 
-func fetchBGPState(ip string, wg *sync.WaitGroup, results chan Output, semaphore chan struct{}) {
-	defer wg.Done()
-
-	url := fmt.Sprintf("https://stat.ripe.net/data/bgp-state/data.json?resource=%s", ip)
+func (r *ripeTask) Process() {
+	url := fmt.Sprintf("https://stat.ripe.net/data/bgp-state/data.json?resource=%s", r.IP)
 	resp, err := http.Get(url)
 	if err != nil {
-		fmt.Printf("Failed to fetch data for IP: %s\n", ip)
-		<-semaphore // Release the semaphore on error
+		fmt.Printf("Failed to fetch data for IP: %s\n", r.IP)
+
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
-		var response Response
+		var response response
 		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-			fmt.Printf("Failed to decode response for IP: %s\n", ip)
-			<-semaphore // Release the semaphore on error
+			fmt.Printf("Failed to decode response for IP: %s\n", r.IP)
+
 			return
 		}
 
@@ -91,72 +86,60 @@ func fetchBGPState(ip string, wg *sync.WaitGroup, results chan Output, semaphore
 			firstBGPState := response.Data.BGPState[0]
 			lastAS := strconv.Itoa(firstBGPState.Path[len(firstBGPState.Path)-1])
 
-			results <- Output{
-				IP:          ip,
-				TargetPrefix: firstBGPState.TargetPrefix,
-				AS:          lastAS,
-			}
+			r.TargetPrefix = firstBGPState.TargetPrefix
+			r.AS = lastAS
+
 		} else {
-			fmt.Printf("No BGP state information available for IP: %s\n", ip)
+			fmt.Printf("No BGP state information available for IP: %s\n", r.IP)
 		}
 	} else {
-		fmt.Printf("Failed to retrieve data for IP: %s\n", ip)
+		fmt.Printf("Failed to retrieve data for IP: %s\n", r.IP)
 	}
-
-	<-semaphore // Release the semaphore on error
 }
 
-func ripe(cmd *cobra.Command, args []string) {
-	// Read IP addresses from the "ip.txt" file
+func ripeMain(cmd *cobra.Command, args []string) {
+	// Record start time
+	startTime := time.Now()
+
+	// Read IP addresses from the file
 	fileName, _ := cmd.Flags().GetString("file")
 	workerCount, _ := cmd.Flags().GetInt("worker")
 
-	file, err := os.Open(fileName)
-	if err != nil {
-		fmt.Printf("Failed to open the file: %v\n", err)
-		return
-	}
-	defer file.Close()
+	ips, _ := utils.ReadFileToList(fileName)
 
-	var ipAddresses []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		ip := scanner.Text()
-		ipAddresses = append(ipAddresses, ip)
-	}
+	// Create list of tasks
+	var tasks []utils.Task
 
-	// Semaphore to limit the number of concurrent goroutines
-	semaphore := make(chan struct{}, workerCount)
+	for _, ip := range ips {
+		// Create RipeTask instance for each IP address
+		task := ripeTask{
+			IP: ip,
+			// You can set other fields as needed
+		}
 
-	var wg sync.WaitGroup
-	results := make(chan Output, len(ipAddresses))
-
-	for _, ip := range ipAddresses {
-		wg.Add(1)
-
-		// Acquire a slot in the semaphore
-		semaphore <- struct{}{}
-		go fetchBGPState(ip, &wg, results, semaphore)
+		// Append the task to the tasks slice
+		tasks = append(tasks, &task)
 	}
 
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	var outputData []Output
-	for result := range results {
-		outputData = append(outputData, result)
+	// Create a worker pool
+	wp := utils.WorkerPool{
+		Tasks:       tasks,
+		Concurrency: workerCount, // Number of workers that can run at a time
 	}
 
-	outputJSON, err := json.Marshal(outputData)
+	// Run the pool
+	wp.Run()
+	fmt.Println("All tasks have been processed!")
+
+	// Save tasks result to a file
+	outputFile := getOutputFileName(fileName)
+	outputJSON, err := json.Marshal(tasks)
 	if err != nil {
 		fmt.Printf("Failed to marshal output data: %v\n", err)
 		return
 	}
-	
-	outputFile := getOutputFileName(fileName)
-	file, err = os.Create(outputFile)
+
+	file, err := os.Create(outputFile)
 	if err != nil {
 		fmt.Printf("Failed to create output file: %v\n", err)
 		return
@@ -167,6 +150,9 @@ func ripe(cmd *cobra.Command, args []string) {
 	if err != nil {
 		fmt.Printf("Failed to write output to file: %v\n", err)
 	}
+
+	// Calculate and print elapsed time
+	fmt.Printf("Execution time: %s\n", time.Since(startTime))
 }
 
 func getOutputFileName(name string) string {
@@ -176,4 +162,3 @@ func getOutputFileName(name string) string {
 	}
 	return name + ".json"
 }
-
